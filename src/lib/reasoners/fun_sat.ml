@@ -322,7 +322,7 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
            "(%a or %a), %a"
            E.print f1.E.ff E.print f2.E.ff Ex.print ex) d;
          print_dbg ~debug:(get_verbose () || get_debug_sat ())
-           "[sat] --------------------- Delta -" *)
+         "[sat] --------------------- Delta -" *)
 
     let gamma g =
       if get_debug_sat () && get_verbose () then begin
@@ -1157,9 +1157,16 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
           "[all-models] No SAT models found"
 
 
-  let compute_concrete_model env origin =
-    if abs (get_interpretation ()) <> origin then env
-    else
+  let compute_concrete_model env compute =
+    let compute =
+      if Options.get_first_interpretation () then
+        match !latest_saved_env with
+        | Some _ -> false
+        | None -> true
+      else compute
+    in
+    if not compute then env
+    else begin
       try
         (* to push pending stuff *)
         let env = do_case_split env (Options.get_case_split_policy ()) in
@@ -1171,11 +1178,11 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
         Options.tool_req 2 "TR-Sat-Conflict-2";
         env.heuristics := Heuristics.bump_activity !(env.heuristics) expl;
         raise (IUnsat (expl, classes))
-
+    end
 
   let return_cached_model return_function =
-    let i = abs(get_interpretation ()) in
-    assert (i = 1 || i = 2 || i = 3);
+    let i = get_interpretation () in
+    assert i;
     assert (not !terminated_normally);
     terminated_normally := true; (* to avoid loops *)
     begin
@@ -1197,15 +1204,14 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
   let () =
     at_exit
       (fun () ->
-         let i = abs(get_interpretation ()) in
-         if not !terminated_normally && (i = 1 || i = 2 || i = 3) then
+         if not !terminated_normally && (get_interpretation ()) then
            return_cached_model (fun () -> ())
       )
 
 
-  let return_answer env orig return_function =
+  let return_answer env compute return_function =
     update_all_models_option env;
-    let env = compute_concrete_model env orig in
+    let env = compute_concrete_model env compute in
     let uf = Ccx.Main.get_union_find (Th.get_case_split_env env.tbox) in
     Options.Time.unset_timeout ~is_gui:(Options.get_is_gui());
     Uf.output_concrete_model uf;
@@ -1216,13 +1222,12 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
   let switch_to_model_gen env =
     not !terminated_normally &&
     not !(env.model_gen_mode) &&
-    let i = abs (get_interpretation ()) in
-    (i = 1 || i = 2 || i = 3)
+    get_interpretation ()
 
 
   let do_switch_to_model_gen env =
-    let i = abs (get_interpretation ()) in
-    assert (i = 1 || i = 2 || i = 3);
+    let i = get_interpretation () in
+    assert i;
     if not !(env.model_gen_mode) &&
        Stdlib.(<>) (Options.get_timelimit_interpretation ()) 0. then
       begin
@@ -1266,7 +1271,7 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
            | E.Let _ | E.Iff _ | E.Xor _ ->
              Printer.print_err
                "Currently, arbitrary formulas in Hyps
-                are not Th-reduced";
+are not Th-reduced";
              assert false
            | E.Not_a_form ->
              assert false
@@ -1345,7 +1350,8 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
       aux_rec ~rm_clauses env inst loop nb_ok, !nb_ok > 0
 
   let greedy_instantiation env =
-    if get_greedy () then return_answer env 1 (fun e -> raise (I_dont_know e));
+    if get_greedy () then return_answer env (get_before_end_interpretation ())
+        (fun e -> raise (I_dont_know e));
     let gre_inst =
       ME.fold
         (fun f (gf,_,_,_) inst ->
@@ -1368,12 +1374,13 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
     let env, ok4 = semantic_th_inst  env gre_inst ~rm_clauses:false ~loop:4 in
     let env = do_case_split env Util.AfterMatching in
     if ok1 || ok2 || ok3 || ok4 then env
-    else return_answer env 1 (fun e -> raise (I_dont_know e))
+    else return_answer env (get_before_end_interpretation ())
+        (fun e -> raise (I_dont_know e))
 
   let normal_instantiation env try_greedy =
     Debug.print_nb_related env;
     let env = do_case_split env Util.BeforeMatching in
-    let env = compute_concrete_model env 2 in
+    let env = compute_concrete_model env (get_before_inst_interpretation ()) in
     let env = new_inst_level env in
     let mconf =
       {Util.nb_triggers = get_nb_triggers ();
@@ -1467,7 +1474,7 @@ module Make (Th : Theory.S) : Sat_solver_sig.S = struct
 
   and back_tracking env =
     try
-      let env = compute_concrete_model env 3 in
+      let env = compute_concrete_model env (get_before_dec_interpretation ()) in
       if env.delta == [] || Options.get_no_decisions() then
         back_tracking (normal_instantiation env true)
       else
